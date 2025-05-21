@@ -1,0 +1,129 @@
+body {
+  margin: 0;
+  font-family: 'Cairo', 'Segoe UI', 'Roboto', 'Oxygen',
+    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: #f5f5f5;
+  direction: rtl;
+}
+
+code {
+  font-family: source-code-pro, Menlo, Monaco, Consolas, 'Courier New',
+    monospace;
+  direction: ltr;
+  text-align: left;
+  display: inline-block;
+}
+
+.hexagon-container {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding: 20px;
+}
+
+.hexagon {
+  position: relative;
+  width: 100px;
+  height: 57.74px; /* width * 0.5774 */
+  margin: 28.87px 5px; /* height * 0.5 */
+  background-color: #f5a623;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  transition: all 0.3s ease;
+  cursor: pointer;
+}
+
+.hexagon:before,
+.hexagon:after {
+  content: "";
+  position: absolute;
+  width: 0;
+  border-left: 50px solid transparent;
+  border-right: 50px solid transparent;
+}
+
+.hexagon:before {
+  bottom: 100%;
+  border-bottom: 28.87px solid #f5a623; /* height * 0.5 */
+}
+
+.hexagon:after {
+  top: 100%;
+  border-top: 28.87px solid #f5a623; /* height * 0.5 */
+}
+
+.hexagon:hover {
+  background-color: #e09000;
+}
+
+.hexagon:hover:before {
+  border-bottom-color: #e09000;
+}
+
+.hexagon:hover:after {
+  border-top-color: #e09000;
+}
+
+.hexagon-content {
+  color: white;
+  z-index: 1;
+  text-align: center;
+  font-size: 14px;
+  max-width: 90%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.auth-paper {
+  padding: 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 400px;
+  width: 100%;
+}
+
+.auth-logo {
+  margin-bottom: 20px;
+  width: 100px;
+  height: 100px;
+}
+
+.auth-form {
+  width: 100%;
+  margin-top: 20px;
+}
+
+.auth-submit {
+  margin-top: 20px !important;
+}
+
+.cell-view {
+  padding: 20px;
+}
+
+.cell-header {
+  margin-bottom: 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.cell-actions {
+  display: flex;
+  gap: 10px;
+}

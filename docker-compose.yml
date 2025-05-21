@@ -1,0 +1,203 @@
+version: '3.8'
+
+services:
+  # خدمة API
+  api:
+    build: ./server
+    container_name: hivedb-api
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./server/cells:/app/cells
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8000
+      - SESSION_SECRET=${SESSION_SECRET:-your-secret-key-change-in-production}
+      - DATABASE_URL=postgresql://hivedb:${POSTGRES_PASSWORD:-hivedb_password}@postgres:5432/hivedb
+      - REDIS_URL=redis://redis:6379/0
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SGX_ENABLED=${SGX_ENABLED:-false}
+      - PROMETHEUS_ENABLED=true
+    depends_on:
+      - postgres
+      - redis
+      - kafka
+      - prometheus
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # خدمة واجهة المستخدم
+  web:
+    build: ./web_interface
+    container_name: hivedb-web
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    environment:
+      - REACT_APP_API_URL=${API_URL:-http://localhost:8000}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # قاعدة البيانات PostgreSQL
+  postgres:
+    image: postgres:14-alpine
+    container_name: hivedb-postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=hivedb
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-hivedb_password}
+      - POSTGRES_DB=hivedb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hivedb"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # خدمة Redis للتخزين المؤقت
+  redis:
+    image: redis:7-alpine
+    container_name: hivedb-redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # خدمة Kafka للرسائل
+  kafka:
+    image: bitnami/kafka:latest
+    container_name: hivedb-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    depends_on:
+      - zookeeper
+
+  # خدمة Zookeeper لإدارة Kafka
+  zookeeper:
+    image: bitnami/zookeeper:latest
+    container_name: hivedb-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+
+  # خدمة Prometheus للمراقبة
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: hivedb-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus:/etc/prometheus
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+
+  # خدمة Grafana لعرض المقاييس
+  grafana:
+    image: grafana/grafana:latest
+    container_name: hivedb-grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+    depends_on:
+      - prometheus
+      
+  # خدمة Node Exporter لمراقبة موارد النظام
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: hivedb-node-exporter
+    restart: always
+    ports:
+      - "9100:9100"
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+
+  # خدمة cAdvisor لمراقبة حاويات Docker
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: hivedb-cadvisor
+    restart: always
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+
+  # خدمة Postgres Exporter لمراقبة قاعدة البيانات
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: hivedb-postgres-exporter
+    restart: always
+    ports:
+      - "9187:9187"
+    environment:
+      - DATA_SOURCE_NAME=postgresql://hivedb:${POSTGRES_PASSWORD:-hivedb_password}@postgres:5432/hivedb?sslmode=disable
+    depends_on:
+      - postgres
+
+  # خدمة Redis Exporter لمراقبة Redis
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: hivedb-redis-exporter
+    restart: always
+    ports:
+      - "9121:9121"
+    environment:
+      - REDIS_ADDR=redis://redis:6379
+    depends_on:
+      - redis
+
+volumes:
+  cells:
+    driver: local
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
