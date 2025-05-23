@@ -3,8 +3,6 @@ import json
 from typing import Dict, Any, List, Optional
 import numpy as np
 import pandas as pd
-import dask.dataframe as dd
-from dask.distributed import Client as DaskClient
 
 logger = logging.getLogger(__name__)
 
@@ -12,39 +10,32 @@ class QueryOptimizer:
     """Query optimizer for HiveDB to improve performance of complex queries."""
     
     def __init__(self):
-        self.dask_client = None
         self.is_initialized = False
         self.query_cache = {}
         self.statistics = {}
     
-    async def initialize(self):
+    def initialize(self):
         """Initialize the query optimizer."""
         try:
-            # Initialize Dask client for parallel processing
-            self.dask_client = DaskClient(processes=True, threads_per_worker=4, n_workers=2)
             self.is_initialized = True
-            logger.info("Query optimizer initialized with Dask")
+            logger.info("Query optimizer initialized")
             return True
         except Exception as e:
             logger.error(f"Failed to initialize query optimizer: {e}")
             return False
     
-    async def shutdown(self):
+    def shutdown(self):
         """Shutdown the query optimizer."""
-        if self.dask_client:
-            self.dask_client.close()
-            self.is_initialized = False
-            logger.info("Query optimizer shut down")
+        self.is_initialized = False
+        logger.info("Query optimizer shut down")
     
     def _convert_to_dataframe(self, data: List[Dict[str, Any]]) -> pd.DataFrame:
         """Convert a list of dictionaries to a pandas DataFrame."""
         return pd.DataFrame(data)
     
-    def _convert_to_dask_dataframe(self, df: pd.DataFrame) -> dd.DataFrame:
-        """Convert a pandas DataFrame to a Dask DataFrame for parallel processing."""
-        return dd.from_pandas(df, npartitions=max(1, len(df) // 10000))
+    # Método eliminado: _convert_to_dask_dataframe
     
-    async def optimize_query(self, query: Dict[str, Any], data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def optimize_query(self, query: Dict[str, Any], data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Optimize and execute a query on the provided data."""
         if not self.is_initialized:
             logger.warning("Query optimizer not initialized, using standard processing")
@@ -62,11 +53,8 @@ class QueryOptimizer:
             # Convert data to DataFrame
             df = self._convert_to_dataframe(data)
             
-            # For large datasets, use Dask for parallel processing
-            if len(df) > 10000:
-                result = await self._execute_parallel_query(query, df)
-            else:
-                result = self._execute_optimized_query(query, df)
+            # Execute optimized query
+            result = self._execute_optimized_query(query, df)
             
             # Cache the result for future use
             self.query_cache[query_hash] = result
@@ -115,34 +103,6 @@ class QueryOptimizer:
         # Apply limit
         if 'limit' in query:
             df = df.head(query['limit'])
-        
-        # Convert back to list of dictionaries
-        return df.to_dict('records')
-    
-    async def _execute_parallel_query(self, query: Dict[str, Any], df: pd.DataFrame) -> List[Dict[str, Any]]:
-        """Execute a query using Dask for parallel processing."""
-        # Convert to Dask DataFrame
-        ddf = self._convert_to_dask_dataframe(df)
-        
-        # Apply filters
-        if 'filter' in query:
-            ddf = self._apply_dask_filters(ddf, query['filter'])
-        
-        # Apply sorting (note: sorting in Dask is expensive)
-        if 'sort' in query:
-            sort_fields = query['sort']
-            ascending = [not field.startswith('-') for field in sort_fields]
-            sort_fields = [field.lstrip('-+') for field in sort_fields]
-            ddf = ddf.sort_values(sort_fields, ascending=ascending)
-        
-        # Apply limit
-        if 'limit' in query:
-            # Convert back to pandas for limit operation
-            df = ddf.compute()
-            df = df.head(query['limit'])
-        else:
-            # Compute the full result
-            df = ddf.compute()
         
         # Convert back to list of dictionaries
         return df.to_dict('records')
@@ -234,38 +194,7 @@ class QueryOptimizer:
         
         return df[mask]
     
-    def _apply_dask_filters(self, ddf: dd.DataFrame, filters: Dict[str, Any]) -> dd.DataFrame:
-        """Apply filters to a Dask DataFrame."""
-        mask = True
-        
-        for field, condition in filters.items():
-            if field not in ddf.columns:
-                continue
-            
-            if isinstance(condition, dict):
-                # Complex condition
-                for op, value in condition.items():
-                    if op == 'eq':
-                        mask = mask & (ddf[field] == value)
-                    elif op == 'ne':
-                        mask = mask & (ddf[field] != value)
-                    elif op == 'gt':
-                        mask = mask & (ddf[field] > value)
-                    elif op == 'gte':
-                        mask = mask & (ddf[field] >= value)
-                    elif op == 'lt':
-                        mask = mask & (ddf[field] < value)
-                    elif op == 'lte':
-                        mask = mask & (ddf[field] <= value)
-                    elif op == 'in':
-                        mask = mask & ddf[field].isin(value)
-                    elif op == 'nin':
-                        mask = mask & ~ddf[field].isin(value)
-            else:
-                # Simple equality condition
-                mask = mask & (ddf[field] == condition)
-        
-        return ddf[mask]
+    # Método eliminado: _apply_dask_filters
     
     def _update_statistics(self, query: Dict[str, Any], input_size: int, output_size: int):
         """Update query statistics for performance monitoring."""

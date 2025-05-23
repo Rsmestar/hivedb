@@ -9,13 +9,10 @@ import os
 import time
 import json
 import logging
-import threading
 import hashlib
-from typing import Dict, List, Any, Optional, Tuple, Set, Union
-from datetime import datetime, timedelta
-import heapq
-from collections import defaultdict, Counter
-import numpy as np
+from typing import Dict, List, Any, Optional
+from datetime import datetime
+from collections import defaultdict
 from dotenv import load_dotenv
 
 # تحميل متغيرات البيئة
@@ -24,13 +21,11 @@ load_dotenv()
 # إعداد التسجيل
 logger = logging.getLogger(__name__)
 
-# إعدادات الذاكرة السائلة
+# إعدادات الذاكرة السائلة - مبسطة لتوافق Render
 LIQUID_CACHE_ENABLED = os.getenv("LIQUID_CACHE_ENABLED", "True").lower() in ("true", "1", "t")
-LIQUID_CACHE_SIZE = int(os.getenv("LIQUID_CACHE_SIZE", "1000"))  # عدد العناصر الأقصى في الذاكرة
-LIQUID_CACHE_TTL = int(os.getenv("LIQUID_CACHE_TTL", "3600"))  # وقت انتهاء الصلاحية بالثواني
-LIQUID_CACHE_PREDICTION_THRESHOLD = float(os.getenv("LIQUID_CACHE_PREDICTION_THRESHOLD", "0.7"))  # حد التنبؤ
-LIQUID_CACHE_LEARNING_RATE = float(os.getenv("LIQUID_CACHE_LEARNING_RATE", "0.1"))  # معدل التعلم
-LIQUID_CACHE_LAYERS = int(os.getenv("LIQUID_CACHE_LAYERS", "3"))  # عدد طبقات الذاكرة
+LIQUID_CACHE_SIZE = int(os.getenv("LIQUID_CACHE_SIZE", "500"))  # عدد العناصر الأقصى في الذاكرة - تم تقليله للتوافق مع Render
+LIQUID_CACHE_TTL = int(os.getenv("LIQUID_CACHE_TTL", "1800"))  # وقت انتهاء الصلاحية بالثواني - تم تقليله للتوافق مع Render
+LIQUID_CACHE_LAYERS = 2  # تم تقليل عدد الطبقات للتبسيط
 
 class CacheItem:
     """عنصر في الذاكرة المؤقتة مع بيانات التعلم"""
@@ -134,30 +129,19 @@ class LiquidCache:
         self.enabled = LIQUID_CACHE_ENABLED
         self.max_size = LIQUID_CACHE_SIZE
         self.default_ttl = LIQUID_CACHE_TTL
-        self.prediction_threshold = LIQUID_CACHE_PREDICTION_THRESHOLD
-        self.learning_rate = LIQUID_CACHE_LEARNING_RATE
         self.num_layers = LIQUID_CACHE_LAYERS
         
-        # الذاكرة المؤقتة متعددة الطبقات
-        self.cache_layers: List[Dict[str, CacheItem]] = [dict() for _ in range(self.num_layers)]
-        
-        # تعلم أنماط الاستعلام
-        self.query_patterns: Dict[str, QueryPattern] = {}
-        self.last_queries: List[str] = []
-        self.max_pattern_history = 100
+        # إنشاء طبقات الذاكرة المؤقتة
+        self.cache_layers = [dict() for _ in range(self.num_layers)]
         
         # إحصائيات
         self.hits = 0
         self.misses = 0
-        self.predictions = 0
-        self.successful_predictions = 0
         
-        # قفل للتزامن
-        self.lock = threading.RLock()
-        
-        # مؤقت لتنظيف الذاكرة
-        self.cleanup_interval = 300  # 5 دقائق
-        self.last_cleanup = time.time()
+        # أنماط الاستعلام للتعلم
+        self.query_patterns: Dict[str, QueryPattern] = {}
+        self.last_patterns: List[str] = []  # آخر 10 أنماط
+        self.last_cleanup = 0
         
         # تحميل أنماط الاستعلام المحفوظة إن وجدت
         self._load_patterns()
@@ -183,27 +167,25 @@ class LiquidCache:
     
     def _update_patterns(self, pattern: str):
         """تحديث أنماط الاستعلام"""
-        with self.lock:
-            # إضافة أو تحديث النمط الحالي
-            if pattern not in self.query_patterns:
-                self.query_patterns[pattern] = QueryPattern(pattern)
-            else:
-                self.query_patterns[pattern].update()
-            
-            # تحديث العلاقات بين الأنماط
-            if self.last_queries:
-                last_pattern = self.last_queries[-1]
-                if last_pattern in self.query_patterns:
-                    self.query_patterns[last_pattern].add_next_pattern(pattern)
-            
-            # إضافة النمط إلى التاريخ
-            self.last_queries.append(pattern)
-            if len(self.last_queries) > self.max_pattern_history:
-                self.last_queries.pop(0)
-            
-            # حفظ الأنماط كل 100 تحديث
-            if sum(p.count for p in self.query_patterns.values()) % 100 == 0:
-                self._save_patterns()
+        if pattern not in self.query_patterns:
+            self.query_patterns[pattern] = QueryPattern(pattern)
+        else:
+            self.query_patterns[pattern].update()
+        
+        # تحديث العلاقات بين الأنماط
+        if self.last_patterns:
+            last_pattern = self.last_patterns[-1]
+            if last_pattern in self.query_patterns:
+                self.query_patterns[last_pattern].add_next_pattern(pattern)
+        
+        # إضافة النمط إلى التاريخ
+        self.last_patterns.append(pattern)
+        if len(self.last_patterns) > 10:
+            self.last_patterns.pop(0)
+        
+        # حفظ الأنماط كل 100 تحديث
+        if sum(p.count for p in self.query_patterns.values()) % 100 == 0:
+            self._save_patterns()
     
     def _predict_next_queries(self, pattern: str) -> List[Tuple[str, float]]:
         """التنبؤ بالاستعلامات التالية المحتملة"""
@@ -212,112 +194,109 @@ class LiquidCache:
         
         return self.query_patterns[pattern].get_next_patterns(threshold=0.3)
     
-    def _preload_predicted_queries(self, pattern: str, load_func):
-        """تحميل مسبق للاستعلامات المتوقعة"""
-        if not self.enabled or not load_func:
-            return
+    def get(self, key: str) -> Optional[Any]:
+        """الحصول على عنصر من الذاكرة المؤقتة"""
+        if not self.enabled:
+            return None
         
-        predictions = self._predict_next_queries(pattern)
-        if not predictions:
-            return
-        
-        self.predictions += len(predictions)
-        
-        # تنفيذ التحميل المسبق في خيط منفصل
-        def preload_worker():
-            for next_pattern, probability in predictions:
-                if probability >= self.prediction_threshold:
-                    try:
-                        # استخراج نوع الاستعلام والمعلمات من النمط
-                        parts = next_pattern.split(":", 1)
-                        if len(parts) != 2:
-                            continue
-                        
-                        query_type = parts[0]
-                        try:
-                            params = json.loads(parts[1])
-                        except:
-                            continue
-                        
-                        # تنفيذ الاستعلام وتخزينه مسبقًا
-                        key = self._generate_key(query_type, params)
-                        if not self.get(key):
-                            result = load_func(query_type, params)
-                            if result:
-                                self.set(key, result, predicted=True)
-                                self.successful_predictions += 1
-                                logger.debug(f"تم التحميل المسبق للاستعلام: {next_pattern} (احتمال: {probability:.2f})")
-                    except Exception as e:
-                        logger.error(f"خطأ في التحميل المسبق: {e}")
-        
-        threading.Thread(target=preload_worker).start()
-    
-    def _move_between_layers(self, key: str, from_layer: int, to_layer: int):
-        """نقل عنصر بين طبقات الذاكرة"""
-        with self.lock:
-            if key in self.cache_layers[from_layer]:
-                item = self.cache_layers[from_layer].pop(key)
-                item.layer = to_layer
-                self.cache_layers[to_layer][key] = item
-    
-    def _update_item_layer(self, item: CacheItem):
-        """تحديث طبقة العنصر بناءً على نمط الاستخدام"""
-        current_layer = item.layer
-        
-        # حساب الطبقة المناسبة بناءً على عدد مرات الوصول والوقت منذ آخر وصول
-        score = item.access_count / max(1, item.time_since_last_access() / 3600)
-        
-        # تعديل الدرجة بناءً على درجة التنبؤ
-        score = score * (1 + item.predicted_score)
-        
-        # تحديد الطبقة المناسبة
-        if score > 10:
-            target_layer = 0  # أعلى طبقة (الأسرع)
-        elif score > 5:
-            target_layer = 1
-        elif score > 1:
-            target_layer = min(2, self.num_layers - 1)
-        else:
-            target_layer = min(3, self.num_layers - 1)  # أدنى طبقة (الأبطأ)
-        
-        # نقل العنصر إذا تغيرت الطبقة
-        if target_layer != current_layer and target_layer < self.num_layers:
-            self._move_between_layers(item.key, current_layer, target_layer)
-    
-    def _cleanup(self, force: bool = False):
-        """تنظيف العناصر منتهية الصلاحية وإدارة حجم الذاكرة"""
-        now = time.time()
-        if not force and now - self.last_cleanup < self.cleanup_interval:
-            return
-        
-        with self.lock:
-            self.last_cleanup = now
-            
-            # إزالة العناصر منتهية الصلاحية
-            for layer in range(self.num_layers):
-                expired_keys = [k for k, v in self.cache_layers[layer].items() if v.is_expired()]
-                for key in expired_keys:
+        # البحث في جميع الطبقات
+        for layer in range(self.num_layers):
+            if key in self.cache_layers[layer]:
+                item = self.cache_layers[layer][key]
+                
+                # التحقق من انتهاء الصلاحية
+                if item.is_expired():
                     del self.cache_layers[layer][key]
-            
-            # التحقق من حجم الذاكرة
-            total_size = sum(len(layer) for layer in self.cache_layers)
-            if total_size <= self.max_size:
-                return
-            
-            # إزالة العناصر الأقل استخدامًا من الطبقات الأدنى
-            items_to_remove = total_size - self.max_size
-            for layer in reversed(range(self.num_layers)):  # البدء من الطبقة الأدنى
-                if items_to_remove <= 0:
-                    break
+                    self.misses += 1
+                    return None
                 
-                layer_items = list(self.cache_layers[layer].items())
-                # ترتيب العناصر حسب الأقل استخدامًا والأقدم
-                layer_items.sort(key=lambda x: (x[1].access_count, -x[1].time_since_last_access()))
+                # تحديث إحصائيات الوصول
+                item.access()
+                self.hits += 1
                 
-                # إزالة العناصر
-                for i in range(min(items_to_remove, len(layer_items))):
-                    del self.cache_layers[layer][layer_items[i][0]]
-                    items_to_remove -= 1
+                return item.value
+        
+        self.misses += 1
+        return None
+    
+    def set(self, key: str, value: Any, ttl: int = None) -> None:
+        """تخزين عنصر في الذاكرة المؤقتة"""
+        if not self.enabled:
+            return
+        
+        # إنشاء عنصر جديد
+        item = CacheItem(key, value, ttl or self.default_ttl)
+        
+        # تخزين العنصر
+        self.cache_layers[0][key] = item
+        
+        # التحقق من حجم الذاكرة
+        total_size = sum(len(layer) for layer in self.cache_layers)
+        if total_size > self.max_size:
+            self._cleanup()
+    
+    def delete(self, key: str) -> bool:
+        """حذف عنصر من الذاكرة المؤقتة"""
+        if not self.enabled:
+            return False
+        
+        for layer in range(self.num_layers):
+            if key in self.cache_layers[layer]:
+                del self.cache_layers[layer][key]
+                return True
+        
+        return False
+    
+    def clear(self) -> None:
+        """مسح جميع العناصر من الذاكرة المؤقتة"""
+        for layer in range(self.num_layers):
+            self.cache_layers[layer].clear()
+    
+    def register_query(self, query_type: str, params: Dict[str, Any], result: Any = None) -> str:
+        """تسجيل استعلام وتحديث أنماط التعلم"""
+        if not self.enabled:
+            return ""
+        
+        # توليد مفتاح ونمط للاستعلام
+        key = self._generate_key(query_type, params)
+        pattern = self._extract_pattern(query_type, params)
+        
+        # تحديث أنماط الاستعلام
+        self._update_patterns(pattern)
+        
+        # تخزين النتيجة إذا كانت متوفرة
+        if result is not None:
+            self.set(key, result)
+        
+        return key
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """الحصول على إحصائيات الذاكرة المؤقتة"""
+        total_items = sum(len(layer) for layer in self.cache_layers)
+        layer_stats = [len(layer) for layer in self.cache_layers]
+        
+        hit_rate = 0
+        if self.hits + self.misses > 0:
+            hit_rate = self.hits / (self.hits + self.misses)
+        
+        return {
+            "enabled": self.enabled,
+            "total_items": total_items,
+            "max_size": self.max_size,
+            "layer_stats": layer_stats,
+            "hits": self.hits,
+            "misses": self.misses,
+            "hit_rate": hit_rate,
+            "patterns_count": len(self.query_patterns),
+            "last_cleanup": self.last_cleanup
+        }
+    
+    def get_hot_patterns(self, limit: int = 10) -> List[Dict[str, Any]]:
+        """الحصول على أكثر أنماط الاستعلام استخدامًا"""
+        patterns = list(self.query_patterns.values())
+        patterns.sort(key=lambda p: p.count, reverse=True)
+        
+        return [p.to_dict() for p in patterns[:limit]]
     
     def _save_patterns(self):
         """حفظ أنماط الاستعلام"""
@@ -360,29 +339,19 @@ class LiquidCache:
         except Exception as e:
             logger.error(f"خطأ في تحميل أنماط الاستعلام: {e}")
     
-    def get(self, key: str) -> Optional[Any]:
-        """الحصول على عنصر من الذاكرة المؤقتة"""
-        if not self.enabled:
-            return None
+    def _cleanup(self):
+        """تنظيف العناصر منتهية الصلاحية وإدارة حجم الذاكرة"""
+        now = time.time()
         
-        self._cleanup()
+        # إزالة العناصر منتهية الصلاحية
+        for layer in range(self.num_layers):
+            expired_keys = [k for k, v in self.cache_layers[layer].items() if v.is_expired()]
+            for key in expired_keys:
+                del self.cache_layers[layer][key]
         
-        with self.lock:
-            # البحث في جميع الطبقات
-            for layer in range(self.num_layers):
-                if key in self.cache_layers[layer]:
-                    item = self.cache_layers[layer][key]
-                    
-                    # التحقق من انتهاء الصلاحية
-                    if item.is_expired():
-                        del self.cache_layers[layer][key]
-                        self.misses += 1
-                        return None
-                    
-                    # تحديث إحصائيات الوصول
-                    item.access()
-                    self.hits += 1
-                    
+        # التحقق من حجم الذاكرة
+        total_size = sum(len(layer) for layer in self.cache_layers)
+        if total_size <= self.max_size:
                     # تحديث طبقة العنصر
                     self._update_item_layer(item)
                     

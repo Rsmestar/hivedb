@@ -1,16 +1,15 @@
 """
-خادم HiveDB الرئيسي المحسن
-يوفر واجهة برمجة التطبيقات (API) للتفاعل مع نظام HiveDB مع ميزات متقدمة
+خادم HiveDB الرئيسي المبسط
+يوفر واجهة برمجة التطبيقات (API) للتفاعل مع نظام HiveDB - مُحسّن للنشر على Render
 """
 
 import os
 import logging
-import asyncio
 from typing import Dict, List, Optional, Union
 from datetime import datetime, timedelta
 
 import uvicorn
-from fastapi import FastAPI, Depends, HTTPException, status, Request, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
@@ -26,25 +25,15 @@ from services.auth.auth import (
     get_password_hash, verify_password, authenticate_user,
     create_access_token, get_current_user, get_current_active_user, get_current_admin_user
 )
-from services.kafka.producer import kafka_producer
-from services.kafka.consumer import kafka_consumer
-from services.sgx.enclave import sgx_enclave
+# Simplified imports - removed complex dependencies
 from services.query_optimizer.optimizer import query_optimizer
 from services.liquid_cache.liquid_cache import liquid_cache
 
-# Additional models for SGX secure operations
-class SecureDataRequest(BaseModel):
-    data: Dict[str, any] = Field(..., description="البيانات المراد تشفيرها أو التحقق منها")
-    data_id: Optional[str] = Field(None, description="معرف البيانات الاختياري للتشفير")
-
-class SecureComputeRequest(BaseModel):
-    operation: str = Field(..., description="العملية المراد تنفيذها على البيانات المشفرة")
-    encrypted_data: Dict[str, str] = Field(..., description="البيانات المشفرة")
-    params: Optional[Dict[str, any]] = Field({}, description="معلمات العملية")
-
-class SecureVerifyRequest(BaseModel):
-    data: Dict[str, any] = Field(..., description="البيانات المراد التحقق منها")
-    hash_value: str = Field(..., description="قيمة التجزئة المتوقعة")
+# Health check response model
+class HealthResponse(BaseModel):
+    status: str
+    version: str
+    timestamp: str
 
 # Configure logging
 logging.basicConfig(
@@ -105,48 +94,21 @@ async def startup_event():
     """Initialize services on startup"""
     logger.info("Starting HiveDB server...")
     
-    # Initialize Kafka producer
-    await kafka_producer.start()
-    
-    # Initialize Kafka consumer for audit logs
-    await kafka_consumer.start(["hivedb-audit"])
-    
-    # Initialize SGX enclave if enabled
-    if os.getenv("SGX_ENABLED", "False").lower() in ("true", "1", "t"):
-        if sgx_enclave.initialize():
-            logger.info("Intel SGX enclave initialized successfully")
-        else:
-            logger.warning("Failed to initialize Intel SGX enclave, falling back to standard security")
+    # Initialize liquid cache
+    liquid_cache.initialize()
     
     # Initialize query optimizer
-    await query_optimizer.initialize()
+    query_optimizer.initialize()
     
-    # Store start time for uptime tracking
-    app.state.start_time = datetime.utcnow()
-    
-    # Log initialization status
-    logger.info(f"HiveDB server started successfully with features: SGX={sgx_enclave.is_initialized}, LiquidCache={liquid_cache.enabled}")
+    logger.info("HiveDB server started successfully")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up resources on shutdown"""
     logger.info("Shutting down HiveDB server...")
     
-    # Stop Kafka producer
-    await kafka_producer.stop()
-    
-    # Stop Kafka consumer
-    await kafka_consumer.stop()
-    
-    # Destroy SGX enclave
-    sgx_enclave.destroy()
-    
-    # Shutdown query optimizer
-    await query_optimizer.shutdown()
-    
-    # Save liquid cache patterns
-    logger.info(f"Saving liquid cache patterns: {len(liquid_cache.query_patterns)} patterns")
-    liquid_cache._save_patterns()
+    # Shutdown liquid cache
+    liquid_cache.shutdown()
     
     logger.info("HiveDB server shutdown complete")
 
@@ -1137,6 +1099,27 @@ def read_root():
         "description": "واجهة برمجة التطبيقات لنظام قواعد بيانات HiveDB المستوحى من خلية النحل مع ميزات متقدمة"
     }
 
+# Health check endpoint
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Health check endpoint for Render"""
+    return {
+        "status": "healthy",
+        "version": "1.0.0",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+# Root endpoint
+@app.get("/")
+def read_root():
+    """Root endpoint"""
+    return {
+        "name": "HiveDB API",
+        "version": "1.0.0",
+        "description": "واجهة برمجة التطبيقات لنظام قواعد بيانات HiveDB المستوحى من خلية النحل"
+    }
+
 # Run the server
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
