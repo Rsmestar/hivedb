@@ -30,12 +30,17 @@ RUN chown -R appuser:appuser /app
 # التبديل إلى المستخدم غير root
 USER appuser
 
-# تعريف متغير البيئة للمنفذ
+# تعريف متغير البيئة للمسار
 ENV PATH="/app/venv/bin:$PATH"
-ENV PORT=8000
 
 # تعريض المنفذ
 EXPOSE 8000
 
+# إنشاء سكريبت لبدء التشغيل
+RUN echo '#!/bin/bash\n\
+port=${PORT:-8000}\n\
+/app/venv/bin/gunicorn -k uvicorn.workers.UvicornWorker main:app --bind 0.0.0.0:$port' > /app/start.sh \
+    && chmod +x /app/start.sh
+
 # أمر بدء التشغيل
-CMD ["/app/venv/bin/gunicorn", "-k", "uvicorn.workers.UvicornWorker", "main:app", "--bind", "0.0.0.0:${PORT}"]
+CMD ["/app/start.sh"]
